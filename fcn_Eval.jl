@@ -1,5 +1,6 @@
 using Plots
 using DifferentialEquations
+using DiffEqSensitivity
 using DelimitedFiles
 using MAT
 using ForwardDiff
@@ -44,13 +45,34 @@ nn = Chain(x -> x,
         Dense(n_nodes, n_nodes, gelu),
         Dense(n_nodes, ns))
 p, re = Flux.destructure(nn);
+rep = re(p.*0.0)
 
 function hybrid!(delta, u, p, t)
     nfkbOde!(delta, u, v, t);
-    du = re(p)(u)
+    du = rep(u)
     delta .+= du
 end
 hybrid!(delta, u0, p, t)
+prob = ODEProblem(hybrid!, u0, (0.0, t_sam[end]), p);
+
+sol = solve(prob, p=p.*0, atol=1.e-6, rtol=1.e-3,
+            sensealg = InterpolatingAdjoint(),
+            isoutofdomain = (m,p,t) -> any(x -> x < 0.0, m),
+            );
+
+loss = function (p)
+    global rep
+    rep = re(p)
+    sol = solve(prob, p=p, atol=1.e-6, rtol=1.e-3,
+            sensealg = ForwardDiffSensitivity(),
+            # isoutofdomain = (m,p,t) -> any(x -> x < 0.0, m),
+            );
+    return sol[1, end]
+end
+
+loss(p.*0)
+
+@time gp = ForwardDiff.gradient(x -> loss(x), p.*0.0)
 
 
 titstr = ["10, ng/mL", "50, ng/mL", "250, ng/mL"];
@@ -59,8 +81,8 @@ for i = 1:length(dose)
     INIT[18] = dose[i]
 
     u0 = vec(INIT);
-    prob = ODEProblem(hybrid!, u0, (0.0, t_sam[end]), p);
-    sol = solve(prob, atol=1.e-6, rtol=1.e-3);
+    prob = ODEProblem(hybrid!, u0, (0.0, t_sam[end]), p.*0);
+    sol = solve(prob, atol=1.e-6, rtol=1.e-3, isoutofdomain = (m,p,t) -> any(x -> x < 0.0, m));
     IkBat = sum(sol'[:,1:4], dims=2)
     
     plt = plot(sol.t, IkBat ./ IkBat[1], lw=3);
